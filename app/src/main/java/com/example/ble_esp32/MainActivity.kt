@@ -2,13 +2,16 @@ package com.example.ble_esp32
 
 import android.Manifest
 import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
+import android.companion.BluetoothDeviceFilter
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.util.Log
@@ -60,14 +63,14 @@ class MainActivity : AppCompatActivity() {
         // ibas a hacer cuando el permiso se concediera. Por
         // ejemplo puedes poner la bandera en true y más
         // tarde en otra función comprobar esa bandera
-        Toast.makeText(this@MainActivity, "El permiso para el almacenamiento está concedido", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this@MainActivity, "El permiso de ubicación está concedido", Toast.LENGTH_SHORT).show()
         tienePermisoUbicacion = true
     }
 
     private fun permisoDeUbicacionDenegado() {
         // Esto se llama cuando el usuario hace click en "Denegar" o
         // cuando lo denegó anteriormente
-        Toast.makeText(this@MainActivity, "El permiso para el almacenamiento está denegado", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this@MainActivity, "El permiso de ubicación está denegado", Toast.LENGTH_SHORT).show()
         tienePermisoUbicacion = false
     }
     var bluetoothGatt : BluetoothGatt?= null
@@ -76,23 +79,45 @@ class MainActivity : AppCompatActivity() {
         (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter
     }
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
-    }
-
-    override fun onResume() {
-        super.onResume()
-
+    private fun onBluetooth(){
         if (bluetoothAdapter.isEnabled){
-            //Start Scanning
-            StartBLEScan()
+            Toast.makeText(this@MainActivity, "Bluetooth encendido", Toast.LENGTH_SHORT).show()
         }else{
             Log.v(TAG,"BT is disabled")
             val btIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
             startActivityForResult(btIntent, REQUEST_ENABLE_BT)
         }
+    }
+
+    lateinit var reciver :BluetoothModeChangeReceiver
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_main)
         verificarYPedirPermisosDeUbicacion()
+        onBluetooth()
+
+        reciver = BluetoothModeChangeReceiver()
+        val filter1 = IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
+
+        registerReceiver(reciver, filter1);
+    }
+
+    override fun onStop() {
+        super.onStop()
+        unregisterReceiver(reciver)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (bluetoothAdapter.isEnabled){
+            StartBLEScan()
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        onBluetooth()
     }
 
     fun StartBLEScan(){
@@ -106,8 +131,11 @@ class MainActivity : AppCompatActivity() {
         val scanSettings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
         Log.v(TAG,"Start Scan")
 
-        bluetoothAdapter.bluetoothLeScanner.startScan(scanFilters, scanSettings, bleScanCallback)
-
+        if (tienePermisoUbicacion) {
+            bluetoothAdapter.bluetoothLeScanner.startScan(scanFilters, scanSettings, bleScanCallback)
+        }else{
+            verificarYPedirPermisosDeUbicacion()
+        }
         //desde aca
 
 
