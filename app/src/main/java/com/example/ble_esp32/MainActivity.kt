@@ -1,159 +1,259 @@
 package com.example.ble_esp32
 
 import android.Manifest
+import android.app.Activity
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
-import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothManager
+
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.companion.BluetoothDeviceFilter
+import android.content.Context
+import android.content.DialogInterface
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
+import android.os.ParcelUuid
 import android.util.Log
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+//import com.example.ble_esp32.DeviceProfile.Companion.CHARACTERISTCS_STATE_UUID
+//import com.example.ble_esp32.DeviceProfile.Companion.SERVICE_UUID
+import java.util.*
+import org.jetbrains.*
+import android.widget.Button
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
+import androidx.recyclerview.widget.SimpleItemAnimator
+import kotlinx.android.synthetic.main.activity_main.*
+import org.jetbrains.anko.alert
+import timber.log.Timber
 
+private const val ENABLE_BLUETOOTH_REQUEST_CODE = 1
+private const val LOCATION_PERMISSION_REQUEST_CODE = 2
 
 class MainActivity : AppCompatActivity() {
 
-    companion object{
-        private val TAG = "TWESTBTSCANNER"
-        val REQUEST_ENABLE_BT = 1
+    /*******************************************
+     * Propiedades
+     *******************************************/
+
+     private val bluetoothAdapter: BluetoothAdapter by lazy {
+        val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+        bluetoothManager.adapter
     }
 
-    //Banderas que indicaran si tenemos permisos
-    private var tienePermisoUbicacion = false
-
-    // Código de permiso, defínelo tú mismo
-    private val CODIGO_PERMISOS_UBICACION = 1
-
-    private fun verificarYPedirPermisosDeUbicacion() {
-        val estadoDePermiso = ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.ACCESS_COARSE_LOCATION)
-        if (estadoDePermiso == PackageManager.PERMISSION_GRANTED) {
-            // En caso de que haya dado permisos ponemos la bandera en true
-            // y llamar al método
-            permisoDeUbicacionConcedido()
-        } else {
-            // Si no, entonces pedimos permisos. Ahora mira onRequestPermissionsResult
-            ActivityCompat.requestPermissions(this@MainActivity, arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION),
-                CODIGO_PERMISOS_UBICACION)
-        }
+    private val bleScanner by lazy {
+        bluetoothAdapter.bluetoothLeScanner
     }
 
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String?>, grantResults: IntArray) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        when (requestCode) {
-            CODIGO_PERMISOS_UBICACION -> if (grantResults.size > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                permisoDeUbicacionConcedido()
-            } else {
-                permisoDeUbicacionDenegado()
+    private val scanSettings = ScanSettings.Builder()
+        .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+        .build()
+
+    private var isScanning = false
+
+    val filter1 = ScanFilter.Builder().setDeviceName("simuladorRCP").build()
+    //val filter2 = ScanFilter.Builder().setDeviceName("maniquiRCP").build()
+    //val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid.fromString("00001810-0000-1000-8000-00805f9b34fb")).build()
+
+    val filters:MutableList<ScanFilter> = mutableListOf()
+
+    private val scanResults = mutableListOf<ScanResult>()
+    private val scanResultAdapter: ScanResultAdapter by lazy {
+        ScanResultAdapter(scanResults) {/* result ->
+            if (isScanning) {
+                stopBleScan()
             }
+            with(result.device) {
+                Timber.w("Connecting to $address")
+                ConnectionManager.connect(this, this@MainActivity)
+            }*/
         }
     }
 
-    private fun permisoDeUbicacionConcedido() {
-        // Aquí establece las banderas o haz lo que
-        // ibas a hacer cuando el permiso se concediera. Por
-        // ejemplo puedes poner la bandera en true y más
-        // tarde en otra función comprobar esa bandera
-        Toast.makeText(this@MainActivity, "El permiso de ubicación está concedido", Toast.LENGTH_SHORT).show()
-        tienePermisoUbicacion = true
-    }
+    private val isLocationPermissionGranted
+        get() = hasPermission(Manifest.permission.ACCESS_FINE_LOCATION)
 
-    private fun permisoDeUbicacionDenegado() {
-        // Esto se llama cuando el usuario hace click en "Denegar" o
-        // cuando lo denegó anteriormente
-        Toast.makeText(this@MainActivity, "El permiso de ubicación está denegado", Toast.LENGTH_SHORT).show()
-        tienePermisoUbicacion = false
-    }
-    var bluetoothGatt : BluetoothGatt?= null
-
-    private val bluetoothAdapter: BluetoothAdapter by lazy {
-        (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter
-    }
-
-    private fun onBluetooth(){
-        if (bluetoothAdapter.isEnabled){
-            Toast.makeText(this@MainActivity, "Bluetooth encendido", Toast.LENGTH_SHORT).show()
-        }else{
-            Log.v(TAG,"BT is disabled")
-            val btIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
-            startActivityForResult(btIntent, REQUEST_ENABLE_BT)
-        }
-    }
-
-    lateinit var reciver :BluetoothModeChangeReceiver
-
+    /*******************************************
+     * Activity function overrides
+     *******************************************/
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-        verificarYPedirPermisosDeUbicacion()
-        onBluetooth()
 
-        reciver = BluetoothModeChangeReceiver()
-        val filter1 = IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
+        val botonEscanear:Button = findViewById(R.id.scan_button)
+        val recyclerView:RecyclerView = findViewById(R.id.scan_results_recycler_view)
 
-        registerReceiver(reciver, filter1);
-    }
-
-    override fun onStop() {
-        super.onStop()
-        unregisterReceiver(reciver)
+        botonEscanear.setOnClickListener {
+            if (!isScanning) {
+                botonEscanear.setText("Stop Scan")
+                startBleScan()
+            }else{
+                botonEscanear.setText("Start Scan")
+                stopBleScan()
+            }
+        }
+        setupRecyclerView()
     }
 
     override fun onResume() {
         super.onResume()
-        if (bluetoothAdapter.isEnabled){
-            StartBLEScan()
+        if (!bluetoothAdapter.isEnabled){
+            promptEnableBluetooth()
         }
     }
 
-    override fun onStart() {
-        super.onStart()
-        onBluetooth()
-    }
-
-    fun StartBLEScan(){
-        Log.v(TAG,"StartBLEScan")
-
-        val scanFilter = ScanFilter.Builder().build()
-
-        val scanFilters:MutableList<ScanFilter> = mutableListOf()
-        scanFilters.add(scanFilter)
-
-        val scanSettings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
-        Log.v(TAG,"Start Scan")
-
-        if (tienePermisoUbicacion) {
-            bluetoothAdapter.bluetoothLeScanner.startScan(scanFilters, scanSettings, bleScanCallback)
-        }else{
-            verificarYPedirPermisosDeUbicacion()
-        }
-        //desde aca
-
-
-    }
-    private val bleScanCallback = object : ScanCallback() {
-            override fun onScanResult(callbackType: Int, result:ScanResult){
-                //super.onScanResult(callbackType, result)
-                Log.v(TAG,"onScanResult")
-
-                val bluetoothDevice = result.device
-                if(bluetoothDevice != null) {
-                    Log.v(TAG, "Device name ${result!!.device.name} Device Adrress ${bluetoothDevice.uuids}")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        when (requestCode) {
+            ENABLE_BLUETOOTH_REQUEST_CODE -> {
+                if (resultCode != Activity.RESULT_OK) {
+                    promptEnableBluetooth()
                 }
             }
+        }
+    }
 
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        when (requestCode) {
+            LOCATION_PERMISSION_REQUEST_CODE -> {
+                if (grantResults.firstOrNull() == PackageManager.PERMISSION_DENIED) {
+                    requestLocationPermission()
+                } else {
+                    //startBleScan()
+                }
+            }
+        }
+    }
+
+    /*******************************************
+     * Private functions
+     *******************************************/
+
+    private fun promptEnableBluetooth(){
+        if (!bluetoothAdapter.isEnabled) {
+            val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
+            startActivityForResult(enableBtIntent, ENABLE_BLUETOOTH_REQUEST_CODE)
+        }
+    }
+
+    private fun startBleScan() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !isLocationPermissionGranted) {
+            requestLocationPermission()
+        } else {
+            filters.add(filter1)
+            //filters.add(filter2)
+            bleScanner.startScan(filters, scanSettings,scanCallback)
+            isScanning = true
+            scanResults.clear()
+            scanResultAdapter.notifyDataSetChanged()
+
+        }
+    }
+
+    private fun stopBleScan() {
+        bleScanner.stopScan(scanCallback)
+        isScanning = false
+    }
+
+    private fun requestLocationPermission() {
+        if (isLocationPermissionGranted) {
+            return
+        }
+        runOnUiThread {
+            val dialogBuilder = AlertDialog.Builder(this)
+
+            // set message of alert dialog
+            dialogBuilder.setMessage("La aplicación solicita el permiso de ubicación para buscar dispositivos Blootooth")
+                // if the dialog is cancelable
+                .setCancelable(false)
+                // positive button text and action
+                .setPositiveButton("OK", DialogInterface.OnClickListener { dialog, id ->
+                    requestPermission(
+                        Manifest.permission.ACCESS_FINE_LOCATION,LOCATION_PERMISSION_REQUEST_CODE)
+                })
+                // negative button text and action
+                .setNegativeButton("Cancel", DialogInterface.OnClickListener { dialog, id ->
+                    dialog.cancel()
+                })
+
+            // create dialog box
+            val alert = dialogBuilder.create()
+            // set title for alert dialog box
+            alert.setTitle("Permiso de ubicación requerido")
+            // show alert dialog
+            alert.show()
+        }
+    }
+
+    private fun setupRecyclerView() {
+        scan_results_recycler_view.apply {
+            adapter = scanResultAdapter
+            layoutManager = LinearLayoutManager(
+                this@MainActivity,
+                RecyclerView.VERTICAL,
+                false
+            )
+            isNestedScrollingEnabled = false
+        }
+
+        val animator = scan_results_recycler_view.itemAnimator
+        if (animator is SimpleItemAnimator) {
+            animator.supportsChangeAnimations = false
+        }
+    }
+
+    /*******************************************
+     * Callback bodies
+     *******************************************/
+    private val scanCallback = object : ScanCallback() {
+        override fun onScanResult(callbackType: Int, result: ScanResult) {
+        /*    with (result.device) {
+                val uuidsss = result.scanRecord!!.serviceUuids[0]
+                Log.i("scanCallback","Found BLE device! Name: ${name ?: "unnamed"}, address: $address, $uuidsss")
+            }*/
+            val indexQuery = scanResults.indexOfFirst { it.device.address == result.device.address }
+            if (indexQuery != -1) { // A scan result already exists with the same address
+                scanResults[indexQuery] = result
+                scanResultAdapter.notifyItemChanged(indexQuery)
+            } else {
+                with(result.device) {
+                    Log.i("scanCallback","Found BLE device! Name: ${name ?: "unnamed"}, address: $address")
+                //Timber.i("Found BLE device! Name: ${name ?: "Unnamed"}, address: $address")
+                }
+                scanResults.add(result)
+                scanResultAdapter.notifyItemInserted(scanResults.size - 1)
+            }
+        }
+
+        override fun onScanFailed(errorCode: Int) {
+            Log.e("scanCallback","onScanFailed: code $errorCode" )
+            //Timber.e("onScanFailed: code $errorCode")
+        }
+    }
+
+    /*******************************************
+     * Extension functions
+     *******************************************/
+    private fun Context.hasPermission(permissionType: String): Boolean {
+        return ContextCompat.checkSelfPermission(this, permissionType) ==
+                PackageManager.PERMISSION_GRANTED
+    }
+    private fun Activity.requestPermission(permission: String, requestCode: Int) {
+        ActivityCompat.requestPermissions(this, arrayOf(permission), requestCode)
     }
 }
-
-
-
-
